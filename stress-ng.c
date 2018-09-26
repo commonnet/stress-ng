@@ -2572,48 +2572,6 @@ wait_for_procs:
 	*duration += time_finish - time_start;
 }
 
-/*
- *  show_stressors()
- *	show names of stressors that are going to be run
- */
-static int show_stressors(void)
-{
-	char *newstr, *str = NULL;
-	ssize_t len = 0;
-	char buffer[64];
-	bool previous = false;
-	proc_info_t *pi;
-
-	for (pi = procs_head; pi; pi = pi->next) {
-		const int32_t n = pi->num_procs;
-
-		if (n) {
-			ssize_t buffer_len;
-
-			buffer_len = snprintf(buffer, sizeof(buffer),
-					"%s %" PRId32 " %s",
-					previous ? "," : "", n,
-					munge_underscore(pi->stressor->name));
-			previous = true;
-			if (buffer_len >= 0) {
-				newstr = realloc(str, len + buffer_len + 1);
-				if (!newstr) {
-					pr_err("Cannot allocate temporary buffer\n");
-					free(str);
-					return -1;
-				}
-				str = newstr;
-				(void)shim_strlcpy(str + len, buffer, buffer_len + 1);
-			}
-			len += buffer_len;
-		}
-	}
-	pr_inf("dispatching hogs:%s\n", str ? str : "");
-	free(str);
-	(void)fflush(stdout);
-
-	return 0;
-}
 
 /*
  *  metrics_dump()
@@ -3729,14 +3687,6 @@ int main(int argc, char **argv)
 		 *  unsupported then this is not an error.
 		 */
 		exit(g_unsupported ? EXIT_SUCCESS : EXIT_FAILURE);
-	}
-
-	/*
-	 *  Show the stressors we're going to run
-	 */
-	if (show_stressors() < 0) {
-		free_procs();
-		exit(EXIT_FAILURE);
 	}
 
 	/*
