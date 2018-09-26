@@ -32,7 +32,7 @@
 int tz_init(tz_info_t **tz_info_list)
 {
 	DIR *dir;
-        struct dirent *entry;
+	struct dirent *entry;
 	size_t i = 0;
 
 	dir = opendir("/sys/class/thermal");
@@ -116,82 +116,64 @@ void tz_free(tz_info_t **tz_info_list)
  */
 int tz_get_temperatures(tz_info_t **tz_info_list, stress_tz_t *tz)
 {
-        tz_info_t *tz_info;
+	tz_info_t *tz_info;
 
 	for (tz_info = *tz_info_list; tz_info; tz_info = tz_info->next) {
 		char path[PATH_MAX];
-		FILE *fp;
-		size_t i = tz_info->index;
 
-		(void)snprintf(path, sizeof(path),
-			"/sys/class/thermal/%s/temp",
-			tz_info->path);
+		(void)snprintf(
+			path, sizeof(path), "/sys/class/thermal/%s/temp", tz_info->path);
 
-		tz->tz_stat[i].temperature = 0;
-		if ((fp = fopen(path, "r")) != NULL) {
-			if (fscanf(fp, "%" SCNu64,
-			     &tz->tz_stat[i].temperature) != 1) {
-				tz->tz_stat[i].temperature = 0;
-			}
-			(void)fclose(fp);
+		FILE *fp = fopen(path, "r");
+		if (fp == NULL) {
+			continue;
 		}
+		tz_stat_t stat;
+		if (fscanf(fp, "%" SCNu64, &stat.temperature) == 1) {
+			tz_stat_buf_push(&tz->tz_stat[tz_info->index], stat);
+		}
+		(void)fclose(fp);
 	}
 	return 0;
 }
 
-/*
- *  tz_dump()
- *	dump thermal zone temperatures
- */
-void tz_dump(FILE *yaml, proc_info_t *procs_head)
+int tz_stat_buf_init(tz_stat_buf_t* buf)
 {
-	bool no_tz_stats = true;
-	proc_info_t *pi;
+    buf->head = 0;
+    buf->len = 0;
+    return 0;
+}
 
-	pr_yaml(yaml, "thermal-zones:\n");
+void tz_stat_buf_push(tz_stat_buf_t* buf, tz_stat_t datum)
+{
+    buf->arr[buf->head] = datum;
+    buf->head = (buf->head + 1) % DATA_POINTS_PER_TZ;
+    buf->len =
+        buf->len == DATA_POINTS_PER_TZ ? DATA_POINTS_PER_TZ : (buf->len + 1);
+}
 
-	for (pi = procs_head; pi; pi = pi->next) {
-		tz_info_t *tz_info;
-		int32_t  j;
-		uint64_t total = 0;
-		uint32_t count = 0;
-		bool dumped_heading = false;
+uint64_t tz_stat_buf_avg_temp(tz_stat_buf_t const * buf)
+{
+    if (buf->len == 0) {
+        return 0;
+    }
+    uint64_t total = 0;
+    for (size_t i = 0; i != buf->len; ++i) {
+        total += buf->arr[i].temperature;
+    }
+    return total / buf->len;
+}
 
-		for (tz_info = g_shared->tz_info; tz_info; tz_info = tz_info->next) {
-			for (j = 0; j < pi->started_procs; j++) {
-				uint64_t temp;
-
-				temp = pi->stats[j]->tz.tz_stat[tz_info->index].temperature;
-				/* Avoid crazy temperatures. e.g. > 250 C */
-				if (temp > 250000)
-					temp = 0;
-				total += temp;
-				count++;
-			}
-
-			if (total) {
-				double temp = ((double)total / count) / 1000.0;
-				char *munged = munge_underscore(pi->stressor->name);
-
-				if (!dumped_heading) {
-					dumped_heading = true;
-					pr_inf("%s:\n", munged);
-					pr_yaml(yaml, "    - stressor: %s\n",
-						munged);
-				}
-				pr_inf("%20s %7.2f °C\n",
-					tz_info->type, temp);
-				pr_yaml(yaml, "      %s: %7.2f\n",
-					tz_info->type, temp);
-				no_tz_stats = false;
-			}
-		}
-		if (total)
-			pr_yaml(yaml, "\n");
-	}
-
-	if (no_tz_stats)
-		pr_inf("thermal zone temperatures not available\n");
+uint64_t tz_stat_buf_max_temp(tz_stat_buf_t const * buf)
+{
+    uint64_t max = 0;
+    for (size_t i = 0; i != buf->len; ++i) {
+        uint64_t const temp = buf->arr[i].temperature;
+        if (temp > max) {
+            max = temp;
+        }
+    }
+    return max;
 }
 
 #endif

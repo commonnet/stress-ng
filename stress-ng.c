@@ -26,6 +26,7 @@
 
 #include <getopt.h>
 #include <syslog.h>
+#include <pthread.h>
 
 #if defined(HAVE_UNAME)
 #include <sys/utsname.h>
@@ -2517,10 +2518,6 @@ again:
 						(void)perf_close(&stats->sp);
 					}
 #endif
-#if defined(STRESS_THERMAL_ZONES)
-					if (g_opt_flags & OPT_FLAGS_THERMAL_ZONES)
-						(void)tz_get_temperatures(&g_shared->tz_info, &stats->tz);
-#endif
 
 					stats->finish = time_now();
 					if (times(&stats->tms) == (clock_t)-1) {
@@ -3038,6 +3035,7 @@ static inline void setup_stats_buffers(void)
 {
 	proc_info_t *pi;
 	proc_stats_t *stats = g_shared->stats;
+	tz_stat_buf_init(g_shared->stats->tz.tz_stat);
 
 	for (pi = procs_head; pi; pi = pi->next) {
 		int32_t j;
@@ -3460,6 +3458,97 @@ static inline void stress_mlock_executable(void)
 #endif
 }
 
+#ifdef STRESS_THERMAL_ZONES
+
+#define SLICES_PER_SEC 1000ull
+#define USEC_PER_SEC   1000000ull
+#define USEC_PER_SLICE USEC_PER_SEC / SLICES_PER_SEC
+
+typedef struct {
+	int keep_alive;
+} temp_thrd_vars_t;
+
+void* temp_measure_thread(void* data)
+{
+	temp_thrd_vars_t* const vars = (temp_thrd_vars_t* const) data;
+	uint64_t const slices_between_samples =
+		g_opt_timeout * SLICES_PER_SEC / DATA_POINTS_PER_TZ;
+	tz_get_temperatures(&g_shared->tz_info, &g_shared->stats->tz);
+	uint64_t slice_counter = 0;
+	while (vars->keep_alive != 0) {
+		usleep(USEC_PER_SLICE);
+		if (++slice_counter == slices_between_samples) {
+			slice_counter = 0;
+			tz_get_temperatures(&g_shared->tz_info, &g_shared->stats->tz);
+		}
+	}
+	pthread_exit(NULL);
+}
+
+/*
+ *  tz_dump()
+ *  dump thermal zone temperatures
+ */
+void tz_dump(FILE *yaml, proc_info_t *procs_head)
+{
+	bool no_tz_stats = true;
+	proc_info_t *pi;
+
+	pr_yaml(yaml, "thermal-zones:\n");
+
+	for (pi = procs_head; pi; pi = pi->next) {
+		tz_info_t *tz_info;
+		int32_t  j;
+		bool dumped_heading = false;
+
+		for (tz_info = g_shared->tz_info; tz_info; tz_info = tz_info->next) {
+			uint64_t total_avg = 0;
+			uint64_t overall_max = 0;
+			uint32_t count = 0;
+			for (j = 0; j < pi->started_procs; j++) {
+				tz_stat_buf_t const * const tz_stats =
+					&pi->stats[j]->tz.tz_stat[tz_info->index];
+				uint64_t const avg = tz_stat_buf_avg_temp(tz_stats);
+				uint64_t const max = tz_stat_buf_max_temp(tz_stats);
+				if (max > overall_max) {
+					overall_max = max;
+				}
+				total_avg += avg;
+				if (avg != 0) {
+					++count;
+				}
+			}
+
+			if (total_avg == 0) {
+				continue;
+			}
+			double const avg_temp = ((double)total_avg / count) / 1000.0;
+			double const peak_temp = (double)overall_max / 1000.0;
+			char const * const munged = munge_underscore(pi->stressor->name);
+
+			if (!dumped_heading) {
+				dumped_heading = true;
+				pr_inf("%s:\n", munged);
+				pr_yaml(yaml, "    - stressor: %s\n", munged);
+			}
+			pr_inf("%20s Average: %7.2f °C\n", tz_info->type, avg_temp);
+			pr_inf("%20s Peak: %7.2f °C\n", tz_info->type, peak_temp);
+			pr_yaml(yaml, "      %s Average: %7.2f\n", tz_info->type, avg_temp);
+			pr_yaml(yaml, "      %s Peak: %7.2f\n", tz_info->type, peak_temp);
+			no_tz_stats = false;
+		}
+		if (dumped_heading) {
+			pr_yaml(yaml, "\n");
+		}
+	}
+
+	if (no_tz_stats) {
+		pr_inf("thermal zone temperatures not available\n");
+	}
+}
+#endif // STRESS_THERMAL_ZONES
+
+
 int main(int argc, char **argv)
 {
 	double duration = 0.0;			/* stressor run time in secs */
@@ -3689,8 +3778,19 @@ int main(int argc, char **argv)
 	/*
 	 *  Setup thermal zone data
 	 */
-	if (g_opt_flags & OPT_FLAGS_THERMAL_ZONES)
+	pthread_t temp_thrd;
+	temp_thrd_vars_t temp_thrd_vars = {.keep_alive = 1};
+	if (g_opt_flags & OPT_FLAGS_THERMAL_ZONES) {
 		tz_init(&g_shared->tz_info);
+		int const ret = pthread_create(
+			&temp_thrd, NULL, temp_measure_thread, (void*)&temp_thrd_vars);
+		if (ret != 0) {
+			stress_unmap_shared();
+			free_procs();
+			tz_free(&g_shared->tz_info);
+			exit(EXIT_FAILURE);
+		}
+	}
 #endif
 
 	stressors_init();
@@ -3746,6 +3846,8 @@ int main(int argc, char **argv)
 	 *  Dump thermal zone measurements
 	 */
 	if (g_opt_flags & OPT_FLAGS_THERMAL_ZONES) {
+		temp_thrd_vars.keep_alive = 0;
+		(void)pthread_join(temp_thrd, NULL);
 		tz_dump(yaml, procs_head);
 		tz_free(&g_shared->tz_info);
 	}

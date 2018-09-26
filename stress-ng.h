@@ -168,6 +168,7 @@
 #endif
 
 #include "stress-version.h"
+#include "thermal-info.h"
 
 #if defined (__linux__)
 /*
@@ -1191,29 +1192,6 @@ typedef struct {
 } stress_perf_t;
 #endif
 
-/* linux thermal zones */
-#if defined(__linux__)
-#define	STRESS_THERMAL_ZONES	 (1)
-#define STRESS_THERMAL_ZONES_MAX (31)	/* best if prime */
-#endif
-
-#if defined(STRESS_THERMAL_ZONES)
-/* per stressor thermal zone info */
-typedef struct tz_info {
-	char	*path;			/* thermal zone path */
-	char 	*type;			/* thermal zone type */
-	size_t	index;			/* thermal zone # index */
-	struct tz_info *next;		/* next thermal zone in list */
-} tz_info_t;
-
-typedef struct {
-	uint64_t temperature;		/* temperature in Celsius * 1000 */
-} tz_stat_t;
-
-typedef struct {
-	tz_stat_t tz_stat[STRESS_THERMAL_ZONES_MAX];
-} stress_tz_t;
-#endif
 
 /* Per process statistics and accounting info */
 typedef struct {
@@ -2732,14 +2710,6 @@ extern int mincore_touch_pages(void *buf, const size_t buf_len);
 /* Mounts */
 extern void mount_free(char *mnts[], const int n);
 extern WARN_UNUSED int mount_get(char *mnts[], const int max);
-
-/* Thermal Zones */
-#if defined(STRESS_THERMAL_ZONES)
-extern int tz_init(tz_info_t **tz_info_list);
-extern void tz_free(tz_info_t **tz_info_list);
-extern int tz_get_temperatures(tz_info_t **tz_info_list, stress_tz_t *tz);
-extern void tz_dump(FILE *yaml, proc_info_t *procs_head);
-#endif
 
 /* Network helpers */
 
