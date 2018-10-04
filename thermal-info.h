@@ -32,16 +32,17 @@
 
 /* per stressor thermal zone info */
 typedef struct tz_info {
-	char           *path; /* thermal zone path */
-	char           *type; /* thermal zone type */
-	size_t         index; /* thermal zone # index */
-	struct tz_info *next; /* next thermal zone in list */
+	char           *path;    /* thermal zone path */
+	char           *type;    /* thermal zone type */
+	size_t         index;    /* thermal zone # index */
+	FILE           *temp_fp; /* sysfs file containing temperature */
+	struct tz_info *next;    /* next thermal zone in list */
 } tz_info_t;
 
 
 // A set of statistics taken at a single point in time.
 typedef struct {
-	uint64_t temperature; /* temperature in Celsius * 1000 */
+	uint64_t temperature; /* temperature in milliCelsius */
 } tz_stat_t;
 
 
@@ -66,7 +67,7 @@ typedef struct {
 
 int tz_init(tz_info_t **tz_info_list);
 void tz_free(tz_info_t **tz_info_list);
-int tz_get_temperatures(tz_info_t **tz_info_list, stress_tz_t *tz);
+int tz_get_stat(tz_info_t*, tz_stat_t* stat);
 
 #endif // STRESS_THERMAL_ZONES
 #endif // __STRESS_NG_THERMAL_INFO_BUFFER_H__

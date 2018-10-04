@@ -3421,6 +3421,50 @@ static inline void stress_mlock_executable(void)
 #define SLICES_PER_SEC 1000ull
 #define USEC_PER_SEC   1000000ull
 #define USEC_PER_SLICE USEC_PER_SEC / SLICES_PER_SEC
+#define SEC_BETWEEN_SAMPLES 1ull
+#define SLICES_BETWEEN_SAMPLES SLICES_PER_SEC * SEC_BETWEEN_SAMPLES
+#define CRITICAL_TEMP 94000ull // milliCelsius
+
+void handle_critical_temp()
+{
+	pid_t pid = fork();
+	if (pid < 0) { // We are in deep trouble
+		abort();
+	}
+	else if (pid == 0) { // child
+		if (execlp("fw_setenv", "fw_setenv", "burn_in_test_status", "FAIL", (char*)NULL) != 0) {
+			abort();
+		}
+	}
+	else { // parent
+		pid_t const ret = waitpid(pid, NULL, 0);
+		if (ret < 0) {
+			abort();
+		}
+	}
+	if (execlp("reboot", "reboot", (char*)NULL) != 0) {
+		abort();
+	}
+}
+
+void tz_get_all_stats(tz_info_t** tz_info_list, stress_tz_t* tz, int record)
+{
+	tz_info_t *tz_info;
+	tz_stat_t stat;
+
+	for (tz_info = *tz_info_list; tz_info; tz_info = tz_info->next) {
+		if (tz_get_stat(tz_info, &stat) != 0) {
+			continue;
+		}
+		if (stat.temperature >= CRITICAL_TEMP) {
+			handle_critical_temp();
+			return;
+		}
+		if (record) {
+			tz_stat_buf_push(&tz->tz_stat[tz_info->index], stat);
+		}
+	}
+}
 
 typedef struct {
 	int keep_alive;
@@ -3429,16 +3473,22 @@ typedef struct {
 void* temp_measure_thread(void* data)
 {
 	temp_thrd_vars_t* const vars = (temp_thrd_vars_t* const) data;
-	uint64_t const slices_between_samples =
-		g_opt_timeout * SLICES_PER_SEC / DATA_POINTS_PER_TZ;
-	tz_get_temperatures(&g_shared->tz_info, &g_shared->stats->tz);
-	uint64_t slice_counter = 0;
+	uint64_t const samples_between_records =
+		g_opt_timeout / SEC_BETWEEN_SAMPLES / DATA_POINTS_PER_TZ;
+	tz_get_all_stats(&g_shared->tz_info, &g_shared->stats->tz, 1);
+	uint64_t sample_counter = 0, slice_counter = 0;
 	while (vars->keep_alive != 0) {
 		usleep(USEC_PER_SLICE);
-		if (++slice_counter == slices_between_samples) {
-			slice_counter = 0;
-			tz_get_temperatures(&g_shared->tz_info, &g_shared->stats->tz);
+		if (++slice_counter != SLICES_BETWEEN_SAMPLES) {
+			continue;
 		}
+		slice_counter = 0;
+		++sample_counter;
+		int const record_samples = sample_counter >= samples_between_records;
+		if (record_samples) {
+			sample_counter = 0;
+		}
+		tz_get_all_stats(&g_shared->tz_info, &g_shared->stats->tz, record_samples);
 	}
 	pthread_exit(NULL);
 }

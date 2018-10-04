@@ -25,6 +25,7 @@
 #include "stress-ng.h"
 
 #if defined(STRESS_THERMAL_ZONES)
+#define TEMP_BUF_SIZE 32
 /*
  *  tz_init()
  *	gather all thermal zones
@@ -83,6 +84,16 @@ int tz_init(tz_info_t **tz_info_list)
 			(void)closedir(dir);
 			return -1;
 		}
+		(void)snprintf(path, sizeof(path),
+			"/sys/class/thermal/%s/temp",
+			entry->d_name);
+		tz_info->temp_fp = fopen(path, "r");
+		if (!tz_info->temp_fp) {
+			free(tz_info->path);
+			free(tz_info);
+			(void)closedir(dir);
+			return -1;
+		}
 		tz_info->index = i++;
 		tz_info->next = *tz_info_list;
 		*tz_info_list = tz_info;
@@ -103,6 +114,7 @@ void tz_free(tz_info_t **tz_info_list)
 	while (tz_info) {
 		tz_info_t *next = tz_info->next;
 
+		fclose(tz_info->temp_fp);
 		free(tz_info->path);
 		free(tz_info->type);
 		free(tz_info);
@@ -110,70 +122,61 @@ void tz_free(tz_info_t **tz_info_list)
 	}
 }
 
-/*
- *  tz_get_temperatures()
- *	collect valid thermal_zones details
- */
-int tz_get_temperatures(tz_info_t **tz_info_list, stress_tz_t *tz)
+int tz_get_stat(tz_info_t* tz_info, tz_stat_t* stat)
 {
-	tz_info_t *tz_info;
-
-	for (tz_info = *tz_info_list; tz_info; tz_info = tz_info->next) {
-		char path[PATH_MAX];
-
-		(void)snprintf(
-			path, sizeof(path), "/sys/class/thermal/%s/temp", tz_info->path);
-
-		FILE *fp = fopen(path, "r");
-		if (fp == NULL) {
-			continue;
-		}
-		tz_stat_t stat;
-		if (fscanf(fp, "%" SCNu64, &stat.temperature) == 1) {
-			tz_stat_buf_push(&tz->tz_stat[tz_info->index], stat);
-		}
-		(void)fclose(fp);
+	char buf[TEMP_BUF_SIZE];
+	if (feof(tz_info->temp_fp)) {
+		clearerr(tz_info->temp_fp);
+		rewind(tz_info->temp_fp);
+	}
+	size_t const num_read =
+		fread(buf, sizeof(*buf), TEMP_BUF_SIZE-1, tz_info->temp_fp);
+	if (num_read == 0) {
+		return -1;
+	}
+	buf[num_read] = '\0';
+	if (sscanf(buf, "%" SCNu64, &stat->temperature) != 1) {
+		return -1;
 	}
 	return 0;
 }
 
 int tz_stat_buf_init(tz_stat_buf_t* buf)
 {
-    buf->head = 0;
-    buf->len = 0;
-    return 0;
+	buf->head = 0;
+	buf->len = 0;
+	return 0;
 }
 
 void tz_stat_buf_push(tz_stat_buf_t* buf, tz_stat_t datum)
 {
-    buf->arr[buf->head] = datum;
-    buf->head = (buf->head + 1) % DATA_POINTS_PER_TZ;
-    buf->len =
-        buf->len == DATA_POINTS_PER_TZ ? DATA_POINTS_PER_TZ : (buf->len + 1);
+	buf->arr[buf->head] = datum;
+	buf->head = (buf->head + 1) % DATA_POINTS_PER_TZ;
+	buf->len = buf->len == DATA_POINTS_PER_TZ ? DATA_POINTS_PER_TZ : (buf->len + 1);
 }
 
 uint64_t tz_stat_buf_avg_temp(tz_stat_buf_t const * buf)
 {
-    if (buf->len == 0) {
-        return 0;
-    }
-    uint64_t total = 0;
-    for (size_t i = 0; i != buf->len; ++i) {
-        total += buf->arr[i].temperature;
-    }
-    return total / buf->len;
+	if (buf->len == 0) {
+		return 0;
+	}
+	uint64_t total = 0;
+	for (size_t i = 0; i != buf->len; ++i) {
+		total += buf->arr[i].temperature;
+	}
+	return total / buf->len;
 }
 
 uint64_t tz_stat_buf_max_temp(tz_stat_buf_t const * buf)
 {
-    uint64_t max = 0;
-    for (size_t i = 0; i != buf->len; ++i) {
-        uint64_t const temp = buf->arr[i].temperature;
-        if (temp > max) {
-            max = temp;
-        }
-    }
-    return max;
+	uint64_t max = 0;
+	for (size_t i = 0; i != buf->len; ++i) {
+		uint64_t const temp = buf->arr[i].temperature;
+		if (temp > max) {
+			max = temp;
+		}
+	}
+	return max;
 }
 
 #endif
